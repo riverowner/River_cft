@@ -9,7 +9,8 @@ import {
   saveTicket,
   updateTicket,
   getTicketById,
-  todayString,
+  getSettings,
+  getActiveDate,
   nowTimeString,
 } from '@/lib/storage'
 import { getCurrentShift } from '@/lib/shifts'
@@ -24,10 +25,13 @@ function ManualEntry() {
   const [initial, setInitial] = useState<TicketFormInitial | undefined>(undefined)
   const [isEditing, setIsEditing] = useState(false)
   const [ready, setReady] = useState(false)
+  const [defaultClient, setDefaultClient] = useState('')
   const [toast, setToast] = useState<ToastState | null>(null)
   const [formKey, setFormKey] = useState(0)
 
   useEffect(() => {
+    setDefaultClient(getSettings().client ?? '')
+
     if (editId) {
       const existing = getTicketById(editId)
       if (existing) {
@@ -38,6 +42,9 @@ function ManualEntry() {
           gross: existing.gross,
           tare: existing.tare,
           shift: existing.shift,
+          client: existing.client,
+          permit: existing.permit,
+          dum: existing.dum,
         })
       }
       setReady(true)
@@ -67,6 +74,9 @@ function ManualEntry() {
         gross: values.gross,
         tare: values.tare,
         shift: values.shift,
+        client: values.client,
+        permit: values.permit,
+        dum: values.dum,
       })
       setToast({ kind: 'success', message: 'تم تحديث التذكرة بنجاح.' })
       setTimeout(() => router.push('/tickets'), 700)
@@ -79,7 +89,10 @@ function ManualEntry() {
       gross: values.gross,
       tare: values.tare,
       shift: values.shift,
-      date: todayString(),
+      client: values.client,
+      permit: values.permit,
+      dum: values.dum,
+      date: getActiveDate(),
       time: nowTimeString(),
     })
     setToast({ kind: 'success', message: 'تم حفظ التذكرة بنجاح.' })
@@ -102,6 +115,7 @@ function ManualEntry() {
           key={formKey}
           initial={initial}
           defaultShift={getCurrentShift()}
+          defaultClient={defaultClient}
           submitLabel={isEditing ? '💾 حفظ التعديلات' : '💾 حفظ التذكرة'}
           onSubmit={handleSubmit}
           onCancel={() => router.push(isEditing ? '/tickets' : '/')}

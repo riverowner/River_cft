@@ -1,7 +1,7 @@
 // Local persistence layer (localStorage). Kept separate from UI.
 // Simple, synchronous, and offline-friendly for the first version.
 
-import type { Ticket, DailySettings, DailyBackup } from './types'
+import type { Ticket, DailySettings, DailyBackup, Client } from './types'
 import { calculateNet } from './calculations'
 
 const KEYS = {
@@ -9,6 +9,8 @@ const KEYS = {
   settings: 'riverTrucks_settings',
   backups: 'riverTrucks_backups',
   closedDays: 'riverTrucks_closedDays',
+  clients: 'riverTrucks_clients',
+  activeDate: 'riverTrucks_activeDate',
 } as const
 
 function isBrowser(): boolean {
@@ -34,6 +36,15 @@ function write<T>(key: string, value: T): void {
   }
 }
 
+function remove(key: string): void {
+  if (!isBrowser()) return
+  try {
+    window.localStorage.removeItem(key)
+  } catch {
+    // ignore
+  }
+}
+
 // ---- Date helpers ----
 
 export function todayString(date: Date = new Date()): string {
@@ -53,6 +64,23 @@ function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 }
 
+// ---- Active working date ----
+// Normally "today", but can point to a reopened previous day so that new
+// tickets are attached to that day ("إكمال عمل سابق").
+
+export function getActiveDate(): string {
+  const stored = read<string>(KEYS.activeDate, '')
+  return stored || todayString()
+}
+
+export function setActiveDate(date: string): void {
+  write(KEYS.activeDate, date)
+}
+
+export function resetActiveDate(): void {
+  remove(KEYS.activeDate)
+}
+
 // ---- Tickets ----
 
 export function getTickets(): Ticket[] {
@@ -63,7 +91,7 @@ function persistTickets(tickets: Ticket[]): void {
   write(KEYS.tickets, tickets)
 }
 
-export function getTodayTickets(date: string = todayString()): Ticket[] {
+export function getTodayTickets(date: string = getActiveDate()): Ticket[] {
   return getTickets().filter((t) => t.date === date)
 }
 
@@ -117,13 +145,69 @@ function recalcCumul(tickets: Ticket[], date: string): Ticket[] {
   })
 }
 
+// ---- Clients & permits ----
+
+export function getClients(): Client[] {
+  return read<Client[]>(KEYS.clients, [])
+}
+
+function persistClients(clients: Client[]): void {
+  write(KEYS.clients, clients)
+}
+
+// Upsert a client by id (or create a new one when id is empty).
+export function saveClient(input: { id?: string; name: string; permits?: string[] }): Client {
+  const clients = getClients()
+  const name = input.name.trim()
+  if (input.id) {
+    const idx = clients.findIndex((c) => c.id === input.id)
+    if (idx !== -1) {
+      clients[idx] = { ...clients[idx], name, permits: input.permits ?? clients[idx].permits }
+      persistClients(clients)
+      return clients[idx]
+    }
+  }
+  const client: Client = { id: generateId(), name, permits: input.permits ?? [] }
+  clients.push(client)
+  persistClients(clients)
+  return client
+}
+
+export function deleteClient(id: string): void {
+  persistClients(getClients().filter((c) => c.id !== id))
+}
+
+export function addPermit(clientId: string, permit: string): void {
+  const value = permit.trim()
+  if (!value) return
+  const clients = getClients()
+  const client = clients.find((c) => c.id === clientId)
+  if (!client) return
+  if (!client.permits.includes(value)) {
+    client.permits.push(value)
+    persistClients(clients)
+  }
+}
+
+export function removePermit(clientId: string, permit: string): void {
+  const clients = getClients()
+  const client = clients.find((c) => c.id === clientId)
+  if (!client) return
+  client.permits = client.permits.filter((p) => p !== permit)
+  persistClients(clients)
+}
+
+export function getPermitsForClient(clientName: string): string[] {
+  const client = getClients().find((c) => c.name === clientName)
+  return client ? client.permits : []
+}
+
 // ---- Settings ----
 
 export function getSettings(): DailySettings {
   const date = todayString()
   return read<DailySettings>(KEYS.settings, {
     date,
-    dum: '',
     navire: '',
     produit: '',
     client: '',
@@ -140,6 +224,10 @@ export function getBackups(): DailyBackup[] {
   return read<DailyBackup[]>(KEYS.backups, [])
 }
 
+export function getBackupByDate(date: string): DailyBackup | null {
+  return getBackups().find((b) => b.date === date) ?? null
+}
+
 export function saveDailyBackup(backup: DailyBackup): void {
   const backups = getBackups().filter((b) => b.date !== backup.date)
   backups.push(backup)
@@ -147,21 +235,42 @@ export function saveDailyBackup(backup: DailyBackup): void {
   write(KEYS.backups, backups)
 
   const closed = read<string[]>(KEYS.closedDays, [])
-  if (!closed.includes(backup.date)) {
+  if (backup.closed && !closed.includes(backup.date)) {
     closed.push(backup.date)
     write(KEYS.closedDays, closed)
   }
 }
 
-export function isDayClosed(date: string = todayString()): boolean {
+export function isDayClosed(date: string = getActiveDate()): boolean {
   return read<string[]>(KEYS.closedDays, []).includes(date)
+}
+
+// Reopen a previously closed day to continue entering tickets ("إكمال عمل سابق").
+// Removes it from the closed list, marks its backup as open, and makes it the
+// active working day so new tickets attach to it.
+export function reopenDay(date: string): void {
+  const closed = read<string[]>(KEYS.closedDays, []).filter((d) => d !== date)
+  write(KEYS.closedDays, closed)
+
+  const backups = getBackups()
+  const backup = backups.find((b) => b.date === date)
+  if (backup) {
+    backup.closed = false
+    write(KEYS.backups, backups)
+  }
+  setActiveDate(date)
+}
+
+// List days that were closed, most recent first, for the "resume" picker.
+export function getClosedDays(): string[] {
+  return read<string[]>(KEYS.closedDays, []).slice().sort((a, b) => b.localeCompare(a))
 }
 
 // Previous-day total: latest backup strictly before `date`.
 // If its settings match the current settings, its total is used as T. Antérieur.
 export function getPreviousDayTotal(
   currentSettings?: DailySettings,
-  date: string = todayString(),
+  date: string = getActiveDate(),
 ): number {
   const backups = getBackups()
     .filter((b) => b.date < date)
@@ -170,7 +279,6 @@ export function getPreviousDayTotal(
   if (!previous) return 0
   if (!currentSettings) return previous.totalNet
   const same =
-    previous.settings.dum === currentSettings.dum &&
     previous.settings.navire === currentSettings.navire &&
     previous.settings.produit === currentSettings.produit &&
     previous.settings.client === currentSettings.client
