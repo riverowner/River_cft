@@ -1,8 +1,10 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { calculateNet } from '@/lib/calculations'
 import { getShiftLabel } from '@/lib/shifts'
+import { getClients } from '@/lib/storage'
+import type { Client } from '@/lib/types'
 
 export interface TicketFormValues {
   ticketNo: string
@@ -11,6 +13,9 @@ export interface TicketFormValues {
   tare: number
   net: number
   shift: number
+  client: string
+  permit: string
+  dum: string
 }
 
 export interface TicketFormInitial {
@@ -19,11 +24,15 @@ export interface TicketFormInitial {
   gross?: number | string
   tare?: number | string
   shift?: number
+  client?: string
+  permit?: string
+  dum?: string
 }
 
 interface TicketFormProps {
   initial?: TicketFormInitial
   defaultShift: number
+  defaultClient?: string
   submitLabel?: string
   onSubmit: (values: TicketFormValues) => void
   onCancel: () => void
@@ -37,16 +46,38 @@ function toStr(v: number | string | undefined): string {
 export function TicketForm({
   initial,
   defaultShift,
+  defaultClient = '',
   submitLabel = '💾 حفظ التذكرة',
   onSubmit,
   onCancel,
 }: TicketFormProps) {
+  const [clients, setClients] = useState<Client[]>([])
   const [ticketNo, setTicketNo] = useState(toStr(initial?.ticketNo))
   const [truckNo, setTruckNo] = useState(toStr(initial?.truckNo))
   const [gross, setGross] = useState(toStr(initial?.gross))
   const [tare, setTare] = useState(toStr(initial?.tare))
   const [shift, setShift] = useState<number>(initial?.shift ?? defaultShift)
+  const [client, setClient] = useState<string>(initial?.client ?? defaultClient)
+  const [permit, setPermit] = useState<string>(initial?.permit ?? '')
+  const [dum, setDum] = useState<string>(initial?.dum ?? '')
   const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setClients(getClients())
+  }, [])
+
+  // Permits available for the currently selected client.
+  const permitsForClient = useMemo(() => {
+    const found = clients.find((c) => c.name === client)
+    return found ? found.permits : []
+  }, [clients, client])
+
+  // If the selected permit is no longer valid for the client, clear it.
+  useEffect(() => {
+    if (permit && !permitsForClient.includes(permit)) {
+      setPermit('')
+    }
+  }, [permitsForClient, permit])
 
   const grossNum = gross.trim() === '' ? NaN : Number(gross)
   const tareNum = tare.trim() === '' ? NaN : Number(tare)
@@ -63,11 +94,15 @@ export function TicketForm({
       return
     }
     if (!Number.isFinite(grossNum) || grossNum < 0) {
-      setError('يرجى إدخال وزن إجمالي (Brut) صحيح.')
+      setError('يرجى إدخال وزن قائم (Brut) صحيح.')
       return
     }
     if (!Number.isFinite(tareNum) || tareNum < 0) {
-      setError('يرجى إدخال وزن الشاحنة (Tare) صحيح.')
+      setError('يرجى إدخال وزن فارغ (Tare) صحيح.')
+      return
+    }
+    if (tareNum > grossNum) {
+      setError('الوزن الفارغ (Tare) لا يمكن أن يكون أكبر من الوزن القائم (Brut).')
       return
     }
     setError(null)
@@ -78,6 +113,9 @@ export function TicketForm({
       tare: tareNum,
       net: calculateNet(grossNum, tareNum),
       shift,
+      client,
+      permit,
+      dum: dum.trim(),
     })
   }
 
@@ -114,9 +152,61 @@ export function TicketForm({
         />
       </div>
 
+      {/* Client + permits: choosing a client reveals its permits clearly. */}
+      <div>
+        <label htmlFor="client" className={labelClass}>
+          الزبون
+        </label>
+        <select
+          id="client"
+          value={client}
+          onChange={(e) => setClient(e.target.value)}
+          className={inputClass}
+        >
+          <option value="">— بدون —</option>
+          {clients.map((c) => (
+            <option key={c.id} value={c.name}>
+              {c.name}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {client ? (
+        <div>
+          <span className={labelClass}>تصاريح الزبون</span>
+          {permitsForClient.length === 0 ? (
+            <p className="rounded-2xl border border-dashed border-border px-4 py-3 text-sm text-muted-foreground">
+              لا توجد تصاريح لهذا الزبون. أضِفها من صفحة الإعدادات.
+            </p>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {permitsForClient.map((p) => {
+                const active = permit === p
+                return (
+                  <button
+                    key={p}
+                    type="button"
+                    onClick={() => setPermit(active ? '' : p)}
+                    aria-pressed={active}
+                    className={`rounded-full border px-4 py-2 text-base font-bold transition-colors active:scale-[0.98] ${
+                      active
+                        ? 'border-manual bg-manual text-manual-foreground'
+                        : 'border-border bg-card text-card-foreground'
+                    }`}
+                  >
+                    {p}
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      ) : null}
+
       <div>
         <label htmlFor="gross" className={labelClass}>
-          الوزن الإجمالي Brut
+          الوزن القائم Brut
         </label>
         <input
           id="gross"
@@ -132,7 +222,7 @@ export function TicketForm({
 
       <div>
         <label htmlFor="tare" className={labelClass}>
-          وزن الشاحنة Tare
+          الوزن الفارغ Tare
         </label>
         <input
           id="tare"
@@ -177,6 +267,20 @@ export function TicketForm({
             </option>
           ))}
         </select>
+      </div>
+
+      {/* DUM stays optional at ticket entry only. */}
+      <div>
+        <label htmlFor="dum" className={labelClass}>
+          DUM (اختياري)
+        </label>
+        <input
+          id="dum"
+          value={dum}
+          onChange={(e) => setDum(e.target.value)}
+          className={inputClass}
+          placeholder="اتركه فارغاً إن لم يكن مطلوباً"
+        />
       </div>
 
       {error ? (
